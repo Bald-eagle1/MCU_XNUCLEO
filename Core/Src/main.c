@@ -22,7 +22,9 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "dht20.h"
+#include "lcd.h"
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -47,7 +49,7 @@ TIM_HandleTypeDef htim2;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-
+DHT20_HandleTypeDef hdht20;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -62,7 +64,74 @@ static void MX_TIM2_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+typedef enum {
+    LIGHT_RED = 0,
+    LIGHT_AMBER,
+    LIGHT_GREEN,
+    LIGHT_OFF
+} TrafficLightColor_t;
 
+/**
+ * @brief Control Traffic Light 1 via 74S139 decoder (TL1_A: PB3, TL1_B: PB5)
+ * Truth table (Active-Low decoder outputs):
+ *   B=0, A=0 -> Y0: RED_1
+ *   B=0, A=1 -> Y1: YELLOW_1 / AMBER
+ *   B=1, A=0 -> Y2: GREEN_1
+ *   B=1, A=1 -> Y3: OFF (All lights off)
+ */
+static void Set_TrafficLight1(TrafficLightColor_t color)
+{
+    switch (color)
+    {
+        case LIGHT_RED:
+            HAL_GPIO_WritePin(TL1_B_GPIO_Port, TL1_B_Pin, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(TL1_A_GPIO_Port, TL1_A_Pin, GPIO_PIN_RESET);
+            break;
+        case LIGHT_AMBER:
+            HAL_GPIO_WritePin(TL1_B_GPIO_Port, TL1_B_Pin, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(TL1_A_GPIO_Port, TL1_A_Pin, GPIO_PIN_SET);
+            break;
+        case LIGHT_GREEN:
+            HAL_GPIO_WritePin(TL1_B_GPIO_Port, TL1_B_Pin, GPIO_PIN_SET);
+            HAL_GPIO_WritePin(TL1_A_GPIO_Port, TL1_A_Pin, GPIO_PIN_RESET);
+            break;
+        default: /* LIGHT_OFF */
+            HAL_GPIO_WritePin(TL1_B_GPIO_Port, TL1_B_Pin, GPIO_PIN_SET);
+            HAL_GPIO_WritePin(TL1_A_GPIO_Port, TL1_A_Pin, GPIO_PIN_SET);
+            break;
+    }
+}
+
+/**
+ * @brief Control Traffic Light 2 via 74S139 decoder (TL2_A: PB4, TL2_B: PB10)
+ * Truth table (Active-Low decoder outputs):
+ *   B=0, A=0 -> Y0: RED_2
+ *   B=0, A=1 -> Y1: YELLOW_2 / AMBER
+ *   B=1, A=0 -> Y2: GREEN_2
+ *   B=1, A=1 -> Y3: OFF (All lights off)
+ */
+static void Set_TrafficLight2(TrafficLightColor_t color)
+{
+    switch (color)
+    {
+        case LIGHT_RED:
+            HAL_GPIO_WritePin(TL2_B_GPIO_Port, TL2_B_Pin, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(TL2_A_GPIO_Port, TL2_A_Pin, GPIO_PIN_RESET);
+            break;
+        case LIGHT_AMBER:
+            HAL_GPIO_WritePin(TL2_B_GPIO_Port, TL2_B_Pin, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(TL2_A_GPIO_Port, TL2_A_Pin, GPIO_PIN_SET);
+            break;
+        case LIGHT_GREEN:
+            HAL_GPIO_WritePin(TL2_B_GPIO_Port, TL2_B_Pin, GPIO_PIN_SET);
+            HAL_GPIO_WritePin(TL2_A_GPIO_Port, TL2_A_Pin, GPIO_PIN_RESET);
+            break;
+        default: /* LIGHT_OFF */
+            HAL_GPIO_WritePin(TL2_B_GPIO_Port, TL2_B_Pin, GPIO_PIN_SET);
+            HAL_GPIO_WritePin(TL2_A_GPIO_Port, TL2_A_Pin, GPIO_PIN_SET);
+            break;
+    }
+}
 /* USER CODE END 0 */
 
 /**
@@ -97,7 +166,32 @@ int main(void)
   MX_I2C1_Init();
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
+  /* Try initializing LCD at Proteus address 0x20, standard 0x27, or fallback 0x3F */
+  const uint8_t lcd_addrs[] = {LCD_ADDR_PROTEUS, LCD_ADDR_PCF8574, LCD_ADDR_PCF8574A};
+  for (int i = 0; i < 3; i++)
+  {
+    if (LCD_Init(&hi2c1, lcd_addrs[i]) == HAL_OK)
+    {
+      break;
+    }
+  }
 
+  LCD_Clear();
+  LCD_SetCursor(0, 0);
+  LCD_SendString("Button & TL Test");
+  LCD_SetCursor(0, 1);
+  LCD_SendString("Press any button");
+  HAL_Delay(1000);
+
+  /* Set initial safe traffic light state */
+  Set_TrafficLight1(LIGHT_RED);
+  Set_TrafficLight2(LIGHT_GREEN);
+
+  /* State tracking variables */
+  TrafficLightColor_t tl1_color = LIGHT_RED;
+  TrafficLightColor_t tl2_color = LIGHT_GREEN;
+  char line_buf[17];
+  const char *color_names[] = {"RED", "AMB", "GRN", "OFF"};
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -107,16 +201,76 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	  uint8_t found[8] = {0}; int n = 0;
-	  for (uint8_t addr = 1; addr < 128; addr++)
-	  {
-		  if (HAL_I2C_IsDeviceReady(&hi2c1, addr << 1, 1, 10) == HAL_OK)
-			  if (n < 8) found[n++] = addr;
-		  // set a breakpoint to inspect the found array
-	  }
+    /* Read all 4 buttons and user button (Active LOW: pressed = 0) */
+    uint8_t btn1_a = (HAL_GPIO_ReadPin(BU1_A_GPIO_Port, BU1_A_Pin) == GPIO_PIN_RESET);
+    uint8_t btn1_b = (HAL_GPIO_ReadPin(BU1_B_GPIO_Port, BU1_B_Pin) == GPIO_PIN_RESET);
+    uint8_t btn2_a = (HAL_GPIO_ReadPin(BU2_A_GPIO_Port, BU2_A_Pin) == GPIO_PIN_RESET);
+    uint8_t btn2_b = (HAL_GPIO_ReadPin(BU2_B_GPIO_Port, BU2_B_Pin) == GPIO_PIN_RESET);
+    uint8_t btn_usr = (HAL_GPIO_ReadPin(B1_GPIO_Port, B1_Pin) == GPIO_PIN_RESET);
 
-	  n = 0;
+    uint8_t any_pressed = 1;
+    const char *current_btn_str = "None       ";
 
+    if (btn1_a)
+    {
+      /* Button 1 (D7 / PA8): Road 1 = RED, Road 2 = GREEN */
+      tl1_color = LIGHT_RED;
+      tl2_color = LIGHT_GREEN;
+      current_btn_str = "BU1_A (D7) ";
+    }
+    else if (btn1_b)
+    {
+      /* Button 2 (D8 / PA9): Road 1 = RED, Road 2 = AMBER */
+      tl1_color = LIGHT_RED;
+      tl2_color = LIGHT_AMBER;
+      current_btn_str = "BU1_B (D8) ";
+    }
+    else if (btn2_a)
+    {
+      /* Button 3 (D9 / PC7): Road 1 = GREEN, Road 2 = RED */
+      tl1_color = LIGHT_GREEN;
+      tl2_color = LIGHT_RED;
+      current_btn_str = "BU2_A (D9) ";
+    }
+    else if (btn2_b)
+    {
+      /* Button 4 (D10 / PB6): Road 1 = AMBER, Road 2 = RED */
+      tl1_color = LIGHT_AMBER;
+      tl2_color = LIGHT_RED;
+      current_btn_str = "BU2_B (D10)";
+    }
+    else if (btn_usr)
+    {
+      /* Blue User Button (PC13): Both Roads OFF */
+      tl1_color = LIGHT_OFF;
+      tl2_color = LIGHT_OFF;
+      current_btn_str = "USER (B1)  ";
+    }
+    else
+    {
+      any_pressed = 0;
+      current_btn_str = "None       ";
+    }
+
+    /* Output to traffic lights */
+    Set_TrafficLight1(tl1_color);
+    Set_TrafficLight2(tl2_color);
+
+    /* Turn on-board LED LD2 (PA5) ON when any button is pressed */
+    HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, any_pressed ? GPIO_PIN_SET : GPIO_PIN_RESET);
+
+    /* Update LCD Line 1: current traffic light states */
+    snprintf(line_buf, sizeof(line_buf), "TL1:%-3s  TL2:%-3s",
+             color_names[tl1_color], color_names[tl2_color]);
+    LCD_SetCursor(0, 0);
+    LCD_SendString(line_buf);
+
+    /* Update LCD Line 2: active button */
+    snprintf(line_buf, sizeof(line_buf), "Btn: %-11s", current_btn_str);
+    LCD_SetCursor(0, 1);
+    LCD_SendString(line_buf);
+
+    HAL_Delay(50); /* 50ms polling delay for smooth button responsiveness */
   }
   /* USER CODE END 3 */
 }
