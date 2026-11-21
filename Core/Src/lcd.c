@@ -86,14 +86,15 @@ HAL_StatusTypeDef LCD_Init(I2C_HandleTypeDef *hi2c, uint8_t addr)
 {
     if (hi2c == NULL) return HAL_ERROR;
 
-    lcd_hi2c = hi2c;
-    lcd_addr = addr;
-
-    /* Check if the device acknowledges at this I2C address */
-    if (HAL_I2C_IsDeviceReady(lcd_hi2c, lcd_addr, 2, LCD_I2C_TIMEOUT) != HAL_OK)
+    /* Check if the device acknowledges at this I2C address before binding handle */
+    if (HAL_I2C_IsDeviceReady(hi2c, addr, 2, LCD_I2C_TIMEOUT) != HAL_OK)
     {
+        lcd_hi2c = NULL;
         return HAL_ERROR;
     }
+
+    lcd_hi2c = hi2c;
+    lcd_addr = addr;
 
     /* 1. Wait > 50 ms after VDD rises */
     HAL_Delay(50);
